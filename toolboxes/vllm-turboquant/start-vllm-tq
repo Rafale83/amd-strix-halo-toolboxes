@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""
+start-vllm-tq — Convenience wrapper for vLLM with TurboQuant KV cache compression.
+
+Injects --attention-backend CUSTOM if not already specified.
+All other arguments are passed through to start-vllm.
+
+Usage:
+    start-vllm-tq --model Qwen/Qwen2.5-72B-Instruct-AWQ
+    start-vllm-tq --model meta-llama/Llama-3.1-8B-Instruct --gpu-memory-utilization 0.95
+
+Environment variables:
+    TQ4_K_BITS  Key quantization bits (default: 4)
+    TQ4_V_BITS  Value quantization bits (default: 4)
+"""
+import os
+import sys
+import subprocess
+
+def main():
+    args = sys.argv[1:]
+
+    # Inject --attention-backend CUSTOM if not already present
+    if "--attention-backend" not in args:
+        args.extend(["--attention-backend", "CUSTOM"])
+
+    # Ensure TurboQuant env vars are set
+    os.environ.setdefault("TQ4_K_BITS", "4")
+    os.environ.setdefault("TQ4_V_BITS", "4")
+
+    # Delegate to the original start-vllm
+    cmd = ["/opt/start-vllm"] + args
+    print(f"[TurboQuant] K={os.environ['TQ4_K_BITS']}bit V={os.environ['TQ4_V_BITS']}bit — KV cache compression active")
+    print(f"[TurboQuant] Running: {' '.join(cmd)}")
+    sys.exit(subprocess.call(cmd))
+
+if __name__ == "__main__":
+    main()

@@ -2,14 +2,25 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # List of all known toolboxes and their configurations
 declare -A TOOLBOXES
+# Local-build toolboxes: name -> Dockerfile directory (relative to SCRIPT_DIR)
+declare -A LOCAL_BUILDS
+LOCAL_BUILDS["vllm-turboquant"]="toolboxes/vllm-turboquant"
 
 TOOLBOXES["llama-vulkan-amdvlk"]="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-amdvlk --device /dev/dri --group-add video --security-opt seccomp=unconfined"
 TOOLBOXES["llama-vulkan-radv"]="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv --device /dev/dri --group-add video --security-opt seccomp=unconfined"
 TOOLBOXES["llama-rocm-6.4.4"]="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-6.4.4 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
 TOOLBOXES["llama-rocm-7.2"]="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm-7.2 --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
 TOOLBOXES["llama-rocm7-nightlies"]="docker.io/kyuz0/amd-strix-halo-toolboxes:rocm7-nightlies --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+
+# ── vLLM containers ────────────────────────────────────────────────────
+# kyuz0 vanilla vLLM (upstream)
+TOOLBOXES["vllm"]="docker.io/kyuz0/vllm-therock-gfx1151:latest --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
+# Rafale83 vLLM + TurboQuant KV cache compression (local build from fork)
+TOOLBOXES["vllm-turboquant"]="localhost/vllm-turboquant-gfx1151:latest --device /dev/dri --device /dev/kfd --group-add video --group-add render --group-add sudo --security-opt seccomp=unconfined"
 
 function usage() {
   echo "Usage: $0 [all|toolbox-name1 toolbox-name2 ...]"
@@ -82,22 +93,29 @@ for name in "${SELECTED_TOOLBOXES[@]}"; do
     $TOOLBOX_CMD rm -f "$name"
   fi
 
-  echo "⬇️ Pulling latest image: $image"
-  podman pull "$image"
-
-
+  # --- Local build or remote pull ---
+  if [[ -v LOCAL_BUILDS["$name"] ]]; then
+    build_dir="${SCRIPT_DIR}/${LOCAL_BUILDS[$name]}"
+    echo "🔨 Building local image: $image (from $build_dir)"
+    podman build -t "$image" -f "$build_dir/Dockerfile" "$build_dir"
+  else
+    echo "⬇️ Pulling latest image: $image"
+    podman pull "$image"
+  fi
 
   echo "📦 Recreating toolbox: $name"
   $TOOLBOX_CMD create "$name" --image "$image" -- $options
 
-  # --- Cleanup: remove dangling images ---
-  repo="${image%:*}"
+  # --- Cleanup (skip for local builds) ---
+  if [[ ! -v LOCAL_BUILDS["$name"] ]]; then
+    repo="${image%:*}"
 
-  # Remove dangling images from this repository (typically prior pulls of this tag)
-  while read -r id; do
-    podman image rm -f "$id" >/dev/null 2>&1 || true
-  done < <(podman images --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
-           | awk -v r="$repo" '$2==r":<none>" {print $1}')
+    # Remove dangling images from this repository (typically prior pulls of this tag)
+    while read -r id; do
+      podman image rm -f "$id" >/dev/null 2>&1 || true
+    done < <(podman images --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
+             | awk -v r="$repo" '$2==r":<none>" {print $1}')
+  fi
   # --- end cleanup ---
 
   echo "✅ $name refreshed"
